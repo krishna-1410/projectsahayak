@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PinDrop Eats — Admin Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app"></div>
+
+    <script src="js/app.js"></script>
+    <script>
+    const user = requireAuth('admin');
+    if (user) init();
+
+    function init() {
+        document.getElementById('app').innerHTML = `
+            ${renderNavbar(user)}
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="tab-stats">📊 Statistics</button>
+                <button class="tab-btn" data-tab="tab-restaurants">🏪 Restaurants</button>
+                <button class="tab-btn" data-tab="tab-offers">🎁 Platform Offers</button>
+            </div>
+            <div class="tab-panels">
+                <div class="tab-content active" id="tab-stats"><div class="container" id="stats-content"></div></div>
+                <div class="tab-content" id="tab-restaurants"><div class="container" id="restaurants-content"></div></div>
+                <div class="tab-content" id="tab-offers"><div class="container" id="offers-content"></div></div>
+            </div>
+        `;
+        initTabs();
+        loadNotifications();
+
+        window.tabCallbacks = {
+            'tab-stats': loadStats,
+            'tab-restaurants': loadRestaurants,
+            'tab-offers': loadOffers,
+        };
+
+        loadStats();
+    }
+
+    // ── Statistics ───────────────────────────────────
+    async function loadStats() {
+        const el = document.getElementById('stats-content');
+        try {
+            const s = await apiGet('/api/admin/stats');
+            el.innerHTML = `
+                <h2 class="mb-2">Platform Overview</h2>
+                <div class="grid grid-4 mb-2">
+                    <div class="stat-card"><div class="stat-value">${s.total_orders}</div><div class="stat-label">Total Orders</div></div>
+                    <div class="stat-card"><div class="stat-value">${formatPrice(s.total_revenue)}</div><div class="stat-label">Total Revenue</div></div>
+                    <div class="stat-card"><div class="stat-value">${s.total_restaurants}</div><div class="stat-label">Restaurants</div></div>
+                    <div class="stat-card"><div class="stat-value">${s.total_customers}</div><div class="stat-label">Customers</div></div>
+                </div>
+                <div class="card">
+                    <div class="card-header">Orders by Status</div>
+                    <div class="card-body">
+                        <div class="grid grid-3">
+                            ${Object.entries(s.orders_by_status).map(([k, v]) => `
+                                <div class="flex-between p-1" style="border-bottom:1px solid var(--gray-200)">
+                                    <span>${statusBadge(k)}</span><strong>${v}</strong>
+                                </div>
+                            `).join('')}
+                        </div>
+                        ${Object.keys(s.orders_by_status).length === 0 ? '<div class="text-muted text-center">No orders yet</div>' : ''}
+                    </div>
+                </div>
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    // ── Restaurants ──────────────────────────────────
+    async function loadRestaurants() {
+        const el = document.getElementById('restaurants-content');
+        try {
+            const restaurants = await apiGet('/api/admin/restaurants');
+            el.innerHTML = `
+                <div class="flex-between mb-2">
+                    <h2>Manage Restaurants</h2>
+                    <button class="btn btn-primary" onclick="showAddRestaurant()">+ Add Restaurant</button>
+                </div>
+                <div id="add-rest-form" class="card mb-2 hidden">
+                    <div class="card-body">
+                        <h3 class="mb-1">Add New Restaurant</h3>
+                        <div class="grid grid-2">
+                            <div class="form-group"><label>Name</label><input id="r-name" class="form-control" placeholder="Restaurant name"></div>
+                            <div class="form-group"><label>PIN Code</label><input id="r-pin" class="form-control" placeholder="e.g. 110001"></div>
+                            <div class="form-group"><label>Restaurant Fee (₹)</label><input id="r-fee" type="number" class="form-control" placeholder="0" value="25"></div>
+                            <div class="form-group"><label>Owner ID (optional)</label><input id="r-owner" type="number" class="form-control" placeholder="User ID"></div>
+                        </div>
+                        <button class="btn btn-success" onclick="addRestaurant()">Save</button>
+                        <button class="btn btn-outline" onclick="document.getElementById('add-rest-form').classList.add('hidden')">Cancel</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>ID</th><th>Name</th><th>PIN</th><th>Status</th><th>Fee</th><th>Owner ID</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            ${restaurants.map(r => `<tr>
+                                <td>${r.id}</td><td>${r.name}</td><td>${r.pin_code}</td>
+                                <td>${statusBadge(r.status === 'active' ? 'Accepted' : 'Cancelled')}</td>
+                                <td>${formatPrice(r.restaurant_fee)}</td><td>${r.owner_id || '-'}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline" onclick="editRestaurant(${r.id}, '${r.name.replace(/'/g,"\\'")}', '${r.pin_code}', ${r.restaurant_fee}, '${r.status}', ${r.owner_id || 'null'})">Edit</button>
+                                </td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    function showAddRestaurant() {
+        document.getElementById('add-rest-form').classList.remove('hidden');
+    }
+
+    async function addRestaurant() {
+        const name = document.getElementById('r-name').value.trim();
+        const pin_code = document.getElementById('r-pin').value.trim();
+        const restaurant_fee = parseFloat(document.getElementById('r-fee').value) || 0;
+        const owner = document.getElementById('r-owner').value;
+        if (!name || !pin_code) { showToast('Name and PIN are required', 'error'); return; }
+        try {
+            await apiPost('/api/admin/restaurants', { name, pin_code, restaurant_fee, owner_id: owner ? parseInt(owner) : null });
+            showToast('Restaurant added!', 'success');
+            loadRestaurants();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    function editRestaurant(id, name, pin, fee, status, ownerId) {
+        const el = document.getElementById('restaurants-content');
+        // Check if edit form already exists and remove it
+        const existing = document.getElementById('edit-rest-form');
+        if (existing) existing.remove();
+
+        const formHTML = `
+        <div id="edit-rest-form" class="card mb-2" style="border:2px solid var(--primary)">
+            <div class="card-body">
+                <h3 class="mb-1">Edit Restaurant #${id}</h3>
+                <div class="grid grid-2">
+                    <div class="form-group"><label>Name</label><input id="e-name" class="form-control" value="${name}"></div>
+                    <div class="form-group"><label>PIN Code</label><input id="e-pin" class="form-control" value="${pin}"></div>
+                    <div class="form-group"><label>Restaurant Fee (₹)</label><input id="e-fee" type="number" class="form-control" value="${fee}"></div>
+                    <div class="form-group"><label>Owner ID</label><input id="e-owner" type="number" class="form-control" value="${ownerId || ''}" placeholder="Enter user ID of owner"></div>
+                    <div class="form-group"><label>Status</label>
+                        <select id="e-status" class="form-control">
+                            <option value="active" ${status==='active'?'selected':''}>Active</option>
+                            <option value="inactive" ${status!=='active'?'selected':''}>Inactive</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-success" onclick="saveEditRestaurant(${id})">Save Changes</button>
+                <button class="btn btn-outline" onclick="document.getElementById('edit-rest-form').remove()">Cancel</button>
+            </div>
+        </div>`;
+
+        // Insert form at top of restaurants content
+        const tableWrap = el.querySelector('.table-wrap');
+        if (tableWrap) tableWrap.insertAdjacentHTML('beforebegin', formHTML);
+        else el.insertAdjacentHTML('beforeend', formHTML);
+        document.getElementById('e-name').focus();
+    }
+
+    async function saveEditRestaurant(id) {
+        const name = document.getElementById('e-name').value.trim();
+        const pin_code = document.getElementById('e-pin').value.trim();
+        const restaurant_fee = parseFloat(document.getElementById('e-fee').value) || 0;
+        const owner_id = document.getElementById('e-owner').value ? parseInt(document.getElementById('e-owner').value) : null;
+        const status = document.getElementById('e-status').value;
+        if (!name || !pin_code) { showToast('Name and PIN are required', 'error'); return; }
+        try {
+            await apiPut(`/api/admin/restaurants/${id}`, { name, pin_code, restaurant_fee, owner_id, status });
+            showToast('Restaurant updated!', 'success');
+            loadRestaurants();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    // ── Offers ──────────────────────────────────────
+    async function loadOffers() {
+        const el = document.getElementById('offers-content');
+        try {
+            const offers = await apiGet('/api/admin/offers');
+            el.innerHTML = `
+                <div class="flex-between mb-2">
+                    <h2>Platform Offers</h2>
+                    <button class="btn btn-primary" onclick="document.getElementById('add-offer-form').classList.toggle('hidden')">+ Add Offer</button>
+                </div>
+                <div id="add-offer-form" class="card mb-2 hidden">
+                    <div class="card-body">
+                        <h3 class="mb-1">New Platform Offer</h3>
+                        <div class="form-group"><label>Description</label><input id="o-desc" class="form-control" placeholder="e.g. Summer Sale 15% off!"></div>
+                        <div class="grid grid-2">
+                            <div class="form-group"><label>Discount (%)</label><input id="o-pct" type="number" class="form-control" placeholder="10"></div>
+                            <div class="form-group"><label>Min Order Value (₹)</label><input id="o-min" type="number" class="form-control" placeholder="200"></div>
+                        </div>
+                        <button class="btn btn-success" onclick="addOffer()">Save</button>
+                    </div>
+                </div>
+                ${offers.length === 0 ? '<div class="text-muted text-center p-2">No platform offers yet</div>' : `
+                <div class="table-wrap"><table>
+                    <thead><tr><th>ID</th><th>Description</th><th>Discount</th><th>Min Value</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        ${offers.map(o => `<tr>
+                            <td>${o.id}</td><td>${o.description}</td><td>${o.discount_percentage}%</td>
+                            <td>${formatPrice(o.minimum_order_value)}</td>
+                            <td><button class="btn btn-sm btn-danger" onclick="deleteOffer(${o.id})">Delete</button></td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table></div>`}
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function addOffer() {
+        const description = document.getElementById('o-desc').value.trim();
+        const discount_percentage = parseFloat(document.getElementById('o-pct').value);
+        const minimum_order_value = parseFloat(document.getElementById('o-min').value);
+        if (!description || !discount_percentage || !minimum_order_value) { showToast('Fill all fields', 'error'); return; }
+        try {
+            await apiPost('/api/admin/offers', { description, discount_percentage, minimum_order_value, applicable_type: 'platform' });
+            showToast('Offer created!', 'success');
+            loadOffers();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function deleteOffer(id) {
+        if (!confirm('Delete this offer?')) return;
+        try {
+            await apiDelete(`/api/admin/offers/${id}`);
+            showToast('Offer deleted', 'success');
+            loadOffers();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+    </script>
+</body>
+</html>

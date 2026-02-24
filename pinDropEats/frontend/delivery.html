@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PinDrop Eats — Delivery Partner Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app"></div>
+
+    <script src="js/app.js"></script>
+    <script>
+    const user = requireAuth('delivery');
+    if (user) init();
+
+    function init() {
+        document.getElementById('app').innerHTML = `
+            ${renderNavbar(user)}
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="tab-status">🟢 My Status</button>
+                <button class="tab-btn" data-tab="tab-orders">📦 My Deliveries</button>
+            </div>
+            <div class="tab-panels">
+                <div class="tab-content active" id="tab-status"><div class="container" id="status-content"></div></div>
+                <div class="tab-content" id="tab-orders"><div class="container" id="orders-content"></div></div>
+            </div>
+        `;
+        initTabs();
+        loadNotifications();
+
+        window.tabCallbacks = {
+            'tab-status': loadStatus,
+            'tab-orders': loadOrders,
+        };
+
+        loadStatus();
+    }
+
+    // ── Status ──────────────────────────────────────
+    async function loadStatus() {
+        const el = document.getElementById('status-content');
+        try {
+            const partner = await apiGet('/api/delivery/status');
+            el.innerHTML = `
+                <h2 class="mb-2">Delivery Partner Status</h2>
+                <div class="card" style="max-width:500px;margin:0 auto;text-align:center">
+                    <div class="card-body">
+                        <div style="font-size:4rem;margin-bottom:1rem">${partner.availability ? '🟢' : '🔴'}</div>
+                        <h3 class="mb-1">${partner.name}</h3>
+                        <div class="text-muted mb-2">PIN Code: ${partner.pin_code}</div>
+                        <div class="mb-2">
+                            <span class="badge-status ${partner.availability ? 'badge-delivered' : 'badge-cancelled'}" style="font-size:1rem;padding:8px 20px">
+                                ${partner.availability ? 'AVAILABLE' : 'OFFLINE'}
+                            </span>
+                        </div>
+                        <button class="btn ${partner.availability ? 'btn-danger' : 'btn-success'} btn-lg" onclick="toggleAvailability()">
+                            ${partner.availability ? 'Go Offline' : 'Go Available'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function toggleAvailability() {
+        try {
+            const result = await apiPut('/api/delivery/availability');
+            showToast(result.message, 'success');
+            loadStatus();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    // ── Orders ──────────────────────────────────────
+    async function loadOrders() {
+        const el = document.getElementById('orders-content');
+        try {
+            const orders = await apiGet('/api/delivery/orders');
+            if (orders.length === 0) {
+                el.innerHTML = '<div class="empty-state"><div class="empty-icon">📦</div><p>No deliveries assigned yet</p></div>';
+                return;
+            }
+            el.innerHTML = `
+                <h2 class="mb-2">My Deliveries</h2>
+                ${orders.map(o => `
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <div class="flex-between mb-1">
+                                <div><strong>Order #${o.id}</strong> <span class="text-muted">${formatDate(o.created_at)}</span></div>
+                                ${statusBadge(o.order_status)}
+                            </div>
+                            <div class="text-muted mb-1">🏪 ${o.restaurant_name || 'Restaurant'} · 👤 ${o.customer_name || 'Customer'}</div>
+                            <div style="font-size:0.9rem" class="mb-1">
+                                ${o.items.map(i => `<div>${i.dish_name || 'Item'} × ${i.quantity}</div>`).join('')}
+                            </div>
+                            <div class="fw-bold mb-1">Total: ${formatPrice(o.total_amount)} (${o.payment_mode})</div>
+                            ${o.order_status === 'Out for Delivery' ? `
+                                <button class="btn btn-success btn-lg" onclick="markDelivered(${o.id})">✅ Mark as Delivered</button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `).join('')}
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function markDelivered(orderId) {
+        try {
+            const result = await apiPut(`/api/delivery/orders/${orderId}/deliver`);
+            showToast(result.message, 'success');
+            loadOrders();
+            loadStatus();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+    </script>
+</body>
+</html>

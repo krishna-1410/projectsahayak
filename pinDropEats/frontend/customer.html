@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PinDrop Eats — Customer Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app"></div>
+
+    <script src="js/app.js"></script>
+    <script>
+    const user = requireAuth('customer');
+    if (user) init();
+
+    function init() {
+        document.getElementById('app').innerHTML = `
+            ${renderNavbar(user)}
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="tab-restaurants">🏪 Restaurants</button>
+                <button class="tab-btn" data-tab="tab-menu">📋 Menu</button>
+                <button class="tab-btn" data-tab="tab-cart">🛒 Cart <span id="cart-badge"></span></button>
+                <button class="tab-btn" data-tab="tab-orders">📦 My Orders</button>
+                <button class="tab-btn" data-tab="tab-complaints">💬 Complaints</button>
+            </div>
+            <div class="tab-panels">
+                <div class="tab-content active" id="tab-restaurants"><div class="container" id="restaurants-content"></div></div>
+                <div class="tab-content" id="tab-menu"><div class="container" id="menu-content"></div></div>
+                <div class="tab-content" id="tab-cart"><div class="container" id="cart-content"></div></div>
+                <div class="tab-content" id="tab-orders"><div class="container" id="orders-content"></div></div>
+                <div class="tab-content" id="tab-complaints"><div class="container" id="complaints-content"></div></div>
+            </div>
+        `;
+        initTabs();
+        loadNotifications();
+
+        window.tabCallbacks = {
+            'tab-restaurants': loadRestaurants,
+            'tab-menu': () => {},
+            'tab-cart': loadCart,
+            'tab-orders': loadOrders,
+            'tab-complaints': loadComplaints,
+        };
+
+        loadRestaurants();
+    }
+
+    // ── Restaurants ─────────────────────────────────
+    let selectedRestaurant = null;
+
+    async function loadRestaurants() {
+        const el = document.getElementById('restaurants-content');
+        try {
+            const restaurants = await apiGet('/api/customer/restaurants');
+            if (restaurants.length === 0) {
+                el.innerHTML = `<div class="empty-state"><div class="empty-icon">🏪</div><p>No restaurants available in your area (PIN: ${user.pin_code})</p></div>`;
+                return;
+            }
+            el.innerHTML = `
+                <h2 class="mb-2">Restaurants near you (PIN: ${user.pin_code})</h2>
+                <div class="grid grid-3">
+                    ${restaurants.map(r => `
+                        <div class="restaurant-card" onclick="viewMenu(${r.id}, '${r.name.replace(/'/g, "\\'")}')">
+                            <div class="rest-banner">${r.name.charAt(0)}</div>
+                            <div class="rest-info">
+                                <div class="rest-name">${r.name}</div>
+                                <div class="rest-meta">📍 PIN: ${r.pin_code} · Fee: ${formatPrice(r.restaurant_fee)}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function viewMenu(restaurantId, restaurantName) {
+        selectedRestaurant = { id: restaurantId, name: restaurantName };
+        document.querySelector('[data-tab="tab-menu"]').click();
+        await loadMenu();
+    }
+
+    // ── Menu ────────────────────────────────────────
+    async function loadMenu() {
+        const el = document.getElementById('menu-content');
+        if (!selectedRestaurant) {
+            el.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><p>Select a restaurant first</p></div>';
+            return;
+        }
+        try {
+            const dishes = await apiGet(`/api/customer/restaurants/${selectedRestaurant.id}/menu`);
+            el.innerHTML = `
+                <div class="flex-between mb-2">
+                    <h2>${selectedRestaurant.name} — Menu</h2>
+                    <button class="btn btn-outline btn-sm" onclick="loadRestaurants(); document.querySelector('[data-tab=\\'tab-restaurants\\']').click();">← Back</button>
+                </div>
+                <div class="grid grid-3">
+                    ${dishes.map(d => `
+                        <div class="dish-card">
+                            <img src="${d.image_path || 'https://via.placeholder.com/400x200?text=Food'}" alt="${d.name}" onerror="this.src='https://via.placeholder.com/400x200?text=Food'">
+                            <div class="dish-info">
+                                <div class="dish-name">${d.name}</div>
+                                <div class="dish-price">${formatPrice(d.price)}</div>
+                                ${!d.availability ? '<div class="dish-unavailable">Currently Unavailable</div>' : ''}
+                            </div>
+                            <div class="dish-actions">
+                                ${d.availability
+                                    ? `<button class="btn btn-primary btn-sm" onclick="addToCart(${d.id})">+ Add to Cart</button>`
+                                    : `<button class="btn btn-sm" disabled>Unavailable</button>`
+                                }
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function addToCart(dishId) {
+        try {
+            await apiPost('/api/customer/cart', { dish_id: dishId, quantity: 1 });
+            showToast('Added to cart!', 'success');
+            updateCartBadge();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function updateCartBadge() {
+        try {
+            const items = await apiGet('/api/customer/cart');
+            const count = items.reduce((s, i) => s + i.quantity, 0);
+            const badge = document.getElementById('cart-badge');
+            if (badge) badge.textContent = count > 0 ? `(${count})` : '';
+        } catch(e) {}
+    }
+    updateCartBadge();
+
+    // ── Cart ────────────────────────────────────────
+    async function loadCart() {
+        const el = document.getElementById('cart-content');
+        try {
+            const items = await apiGet('/api/customer/cart');
+            if (items.length === 0) {
+                el.innerHTML = '<div class="empty-state"><div class="empty-icon">🛒</div><p>Your cart is empty</p></div>';
+                return;
+            }
+            const subtotal = items.reduce((s, i) => s + (i.dish_price * i.quantity), 0);
+            // Fetch offers for the restaurant
+            const restaurantId = items[0].restaurant_id;
+            let offers = [];
+            try { offers = await apiGet(`/api/customer/offers?restaurant_id=${restaurantId}`); } catch(e) {}
+
+            el.innerHTML = `
+                <h2 class="mb-2">Your Cart — ${items[0].restaurant_name || 'Restaurant'}</h2>
+                <div class="card mb-2">
+                    ${items.map(item => `
+                        <div class="cart-item">
+                            <img src="${item.dish_image || 'https://via.placeholder.com/70?text=Food'}" alt="${item.dish_name}" onerror="this.src='https://via.placeholder.com/70?text=Food'">
+                            <div class="cart-item-info">
+                                <div class="cart-item-name">${item.dish_name}</div>
+                                <div class="cart-item-price">${formatPrice(item.dish_price)} × ${item.quantity}</div>
+                            </div>
+                            <div style="font-weight:700;color:var(--primary)">${formatPrice(item.dish_price * item.quantity)}</div>
+                            <button class="btn btn-danger btn-sm" onclick="removeCartItem(${item.id})">✕</button>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <div class="card mb-2">
+                    <div class="card-body">
+                        <h3 class="mb-1">Apply Offer</h3>
+                        <select id="offer-select" class="form-control" onchange="updateTotal()">
+                            <option value="">No offer</option>
+                            ${offers.map(o => `
+                                <option value="${o.id}" data-pct="${o.discount_percentage}" data-min="${o.minimum_order_value}">
+                                    ${o.description} (${o.discount_percentage}% off, min ₹${o.minimum_order_value})
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div id="offer-message" class="mt-1 text-muted" style="font-size:0.85rem"></div>
+                    </div>
+                </div>
+
+                <div class="card mb-2">
+                    <div class="card-body">
+                        <div class="flex-between mb-1"><span>Subtotal</span><span id="subtotal">${formatPrice(subtotal)}</span></div>
+                        <div class="flex-between mb-1"><span>Restaurant Fee</span><span id="rest-fee">Loading...</span></div>
+                        <div class="flex-between mb-1 text-success"><span>Discount</span><span id="discount">-₹0.00</span></div>
+                        <hr style="margin:8px 0;border-color:var(--gray-200)">
+                        <div class="flex-between fw-bold fs-lg"><span>Total</span><span id="total-amount">${formatPrice(subtotal)}</span></div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Payment Mode</label>
+                    <select id="payment-mode" class="form-control">
+                        <option value="online">Online Payment</option>
+                        <option value="cod">Cash on Delivery</option>
+                        <option value="upi">UPI</option>
+                    </select>
+                </div>
+
+                <div class="flex-between">
+                    <button class="btn btn-danger" onclick="clearCart()">Clear Cart</button>
+                    <button class="btn btn-primary btn-lg" onclick="checkout()">Place Order</button>
+                </div>
+            `;
+
+            // Load restaurant fee
+            loadRestaurantFee(restaurantId, subtotal);
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    let currentRestFee = 0;
+    let currentSubtotal = 0;
+
+    async function loadRestaurantFee(rid, subtotal) {
+        currentSubtotal = subtotal;
+        try {
+            const restaurants = await apiGet('/api/customer/restaurants');
+            const rest = restaurants.find(r => r.id === rid);
+            currentRestFee = rest ? rest.restaurant_fee : 0;
+            document.getElementById('rest-fee').textContent = formatPrice(currentRestFee);
+            updateTotal();
+        } catch(e) {
+            currentRestFee = 0;
+            document.getElementById('rest-fee').textContent = formatPrice(0);
+            updateTotal();
+        }
+    }
+
+    function updateTotal() {
+        const sel = document.getElementById('offer-select');
+        const opt = sel?.selectedOptions[0];
+        const msg = document.getElementById('offer-message');
+        let discount = 0;
+        if (opt && opt.value) {
+            const pct = parseFloat(opt.dataset.pct);
+            const minVal = parseFloat(opt.dataset.min);
+            if (currentSubtotal < minVal) {
+                msg.textContent = `⚠️ Min order ₹${minVal} required. Add ₹${(minVal - currentSubtotal).toFixed(2)} more.`;
+                msg.className = 'mt-1 text-danger';
+            } else {
+                discount = currentSubtotal * (pct / 100);
+                msg.textContent = `✅ ${pct}% off applied! Saving ${formatPrice(discount)}`;
+                msg.className = 'mt-1 text-success';
+            }
+        } else {
+            if (msg) { msg.textContent = ''; }
+        }
+        const discountEl = document.getElementById('discount');
+        const totalEl = document.getElementById('total-amount');
+        if (discountEl) discountEl.textContent = `-${formatPrice(discount)}`;
+        if (totalEl) totalEl.textContent = formatPrice(currentSubtotal + currentRestFee - discount);
+    }
+
+    async function removeCartItem(itemId) {
+        try {
+            await apiDelete(`/api/customer/cart/${itemId}`);
+            showToast('Item removed', 'success');
+            loadCart();
+            updateCartBadge();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function clearCart() {
+        try {
+            await apiDelete('/api/customer/cart');
+            showToast('Cart cleared', 'success');
+            loadCart();
+            updateCartBadge();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function checkout() {
+        const paymentMode = document.getElementById('payment-mode').value;
+        const offerSel = document.getElementById('offer-select');
+        const offerId = offerSel?.value ? parseInt(offerSel.value) : null;
+
+        // Validate offer minimum
+        if (offerId) {
+            const opt = offerSel.selectedOptions[0];
+            const minVal = parseFloat(opt.dataset.min);
+            if (currentSubtotal < minVal) {
+                showToast(`Minimum order value ₹${minVal} not met for this offer`, 'error');
+                return;
+            }
+        }
+
+        try {
+            const order = await apiPost('/api/customer/checkout', {
+                payment_mode: paymentMode,
+                offer_id: offerId,
+            });
+            showToast(`Order #${order.id} placed successfully! Est. delivery: ${order.estimated_delivery_time} min`, 'success');
+            updateCartBadge();
+            // Switch to orders tab
+            document.querySelector('[data-tab="tab-orders"]').click();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    // ── Orders ──────────────────────────────────────
+    async function loadOrders() {
+        const el = document.getElementById('orders-content');
+        try {
+            const orders = await apiGet('/api/customer/orders');
+            if (orders.length === 0) {
+                el.innerHTML = '<div class="empty-state"><div class="empty-icon">📦</div><p>No orders yet</p></div>';
+                return;
+            }
+            el.innerHTML = `
+                <h2 class="mb-2">My Orders</h2>
+                ${orders.map(o => `
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <div class="flex-between mb-1">
+                                <div>
+                                    <strong>Order #${o.id}</strong>
+                                    <span class="text-muted" style="margin-left:8px;font-size:0.85rem">${formatDate(o.created_at)}</span>
+                                </div>
+                                <div>${statusBadge(o.order_status)}</div>
+                            </div>
+                            <div class="text-muted mb-1">🏪 ${o.restaurant_name || 'Restaurant'} ${o.delivery_partner_name ? '· 🚴 ' + o.delivery_partner_name : ''}</div>
+                            ${o.estimated_delivery_time ? `<div class="delivery-estimate mb-1">🕐 Est. ${o.estimated_delivery_time} min</div>` : ''}
+
+                            ${renderTimeline(o.order_status)}
+
+                            <div class="mt-1" style="font-size:0.9rem">
+                                ${o.items.map(i => `<div>${i.dish_name || 'Item'} × ${i.quantity} — ${formatPrice(i.price * i.quantity)}</div>`).join('')}
+                                ${o.discount_amount > 0 ? `<div class="text-success">Discount: -${formatPrice(o.discount_amount)}</div>` : ''}
+                                <div class="text-muted">Fee: ${formatPrice(o.restaurant_fee)}</div>
+                                <div class="fw-bold mt-1">Total: ${formatPrice(o.total_amount)} (${o.payment_mode})</div>
+                            </div>
+                            <div class="mt-2 flex flex-gap">
+                                <button class="btn btn-outline btn-sm" onclick="reorder(${o.id})">🔄 Reorder</button>
+                                <button class="btn btn-sm btn-secondary" onclick="openComplaintForm(${o.id})">💬 Raise Complaint</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function reorder(orderId) {
+        try {
+            const result = await apiPost(`/api/customer/orders/${orderId}/reorder`, {});
+            showToast(result.message, 'success');
+            updateCartBadge();
+            document.querySelector('[data-tab="tab-cart"]').click();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    function openComplaintForm(orderId) {
+        document.querySelector('[data-tab="tab-complaints"]').click();
+        setTimeout(() => {
+            const sel = document.getElementById('complaint-order-id');
+            if (sel) sel.value = orderId;
+        }, 200);
+    }
+
+    // ── Complaints ──────────────────────────────────
+    async function loadComplaints() {
+        const el = document.getElementById('complaints-content');
+        try {
+            const complaints = await apiGet('/api/customer/complaints');
+            const orders = await apiGet('/api/customer/orders');
+
+            el.innerHTML = `
+                <h2 class="mb-2">Complaints</h2>
+                <div class="card mb-2">
+                    <div class="card-body">
+                        <h3 class="mb-1">Raise a Complaint</h3>
+                        <div class="form-group">
+                            <label>Order</label>
+                            <select id="complaint-order-id" class="form-control">
+                                <option value="">Select an order</option>
+                                ${orders.map(o => `<option value="${o.id}">#${o.id} — ${o.restaurant_name} (${o.order_status})</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Description</label>
+                            <textarea id="complaint-desc" class="form-control" placeholder="Describe your issue..."></textarea>
+                        </div>
+                        <button class="btn btn-primary" onclick="submitComplaint()">Submit Complaint</button>
+                    </div>
+                </div>
+
+                ${complaints.length === 0
+                    ? '<div class="text-muted text-center p-2">No complaints filed.</div>'
+                    : `<div class="table-wrap"><table>
+                        <thead><tr><th>ID</th><th>Order</th><th>Description</th><th>Status</th><th>Resolution</th><th>Date</th></tr></thead>
+                        <tbody>
+                            ${complaints.map(c => `<tr>
+                                <td>#${c.id}</td>
+                                <td>#${c.order_id}</td>
+                                <td>${c.description}</td>
+                                <td>${statusBadge(c.status)}</td>
+                                <td>${c.resolution_notes || '-'}</td>
+                                <td>${formatDate(c.created_at)}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table></div>`
+                }
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    async function submitComplaint() {
+        const orderId = document.getElementById('complaint-order-id').value;
+        const desc = document.getElementById('complaint-desc').value.trim();
+        if (!orderId || !desc) { showToast('Please select an order and enter a description', 'error'); return; }
+        try {
+            await apiPost('/api/customer/complaints', { order_id: parseInt(orderId), description: desc });
+            showToast('Complaint submitted!', 'success');
+            loadComplaints();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+    </script>
+</body>
+</html>

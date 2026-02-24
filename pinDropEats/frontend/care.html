@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PinDrop Eats — Customer Care Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app"></div>
+
+    <script src="js/app.js"></script>
+    <script>
+    const user = requireAuth('care');
+    if (user) init();
+
+    function init() {
+        document.getElementById('app').innerHTML = `
+            ${renderNavbar(user)}
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="tab-complaints">💬 Complaints</button>
+                <button class="tab-btn" data-tab="tab-orders">📦 All Orders</button>
+            </div>
+            <div class="tab-panels">
+                <div class="tab-content active" id="tab-complaints"><div class="container" id="complaints-content"></div></div>
+                <div class="tab-content" id="tab-orders"><div class="container" id="orders-content"></div></div>
+            </div>
+        `;
+        initTabs();
+        loadNotifications();
+
+        window.tabCallbacks = {
+            'tab-complaints': loadComplaints,
+            'tab-orders': loadOrders,
+        };
+
+        loadComplaints();
+    }
+
+    // ── Complaints ──────────────────────────────────
+    async function loadComplaints() {
+        const el = document.getElementById('complaints-content');
+        try {
+            const complaints = await apiGet('/api/care/complaints');
+            el.innerHTML = `
+                <h2 class="mb-2">All Complaints</h2>
+                ${complaints.length === 0
+                    ? '<div class="empty-state"><div class="empty-icon">💬</div><p>No complaints to review</p></div>'
+                    : complaints.map(c => `
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <div class="flex-between mb-1">
+                                <div><strong>Complaint #${c.id}</strong> — Order #${c.order_id}</div>
+                                ${statusBadge(c.status)}
+                            </div>
+                            <div class="text-muted mb-1">👤 ${c.customer_name || 'Customer'} · ${formatDate(c.created_at)}</div>
+                            <div class="mb-1" style="background:var(--gray-100);padding:10px;border-radius:8px;font-size:0.9rem">${c.description}</div>
+                            ${c.resolution_notes ? `<div class="mb-1 text-success" style="font-size:0.9rem"><strong>Resolution:</strong> ${c.resolution_notes}</div>` : ''}
+
+                            <div class="grid grid-2 mt-2" style="max-width:600px">
+                                <div class="form-group">
+                                    <label>Update Status</label>
+                                    <select id="cs-${c.id}" class="form-control">
+                                        <option value="Open" ${c.status==='Open'?'selected':''}>Open</option>
+                                        <option value="In Progress" ${c.status==='In Progress'?'selected':''}>In Progress</option>
+                                        <option value="Resolved" ${c.status==='Resolved'?'selected':''}>Resolved</option>
+                                        <option value="Closed" ${c.status==='Closed'?'selected':''}>Closed</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Resolution Notes</label>
+                                    <input id="cn-${c.id}" class="form-control" placeholder="Add notes..." value="${c.resolution_notes || ''}">
+                                </div>
+                            </div>
+                            <div class="flex flex-gap">
+                                <button class="btn btn-primary btn-sm" onclick="updateComplaint(${c.id})">Update Complaint</button>
+                                ${['Placed','Accepted','Preparing','Out for Delivery'].includes(getOrderStatus(c.order_id))
+                                    ? `<button class="btn btn-danger btn-sm" onclick="cancelOrder(${c.order_id})">Cancel Order #${c.order_id}</button>`
+                                    : ''
+                                }
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    let ordersCache = [];
+
+    function getOrderStatus(orderId) {
+        const o = ordersCache.find(x => x.id === orderId);
+        return o ? o.order_status : '';
+    }
+
+    async function updateComplaint(complaintId) {
+        const status = document.getElementById(`cs-${complaintId}`).value;
+        const resolution_notes = document.getElementById(`cn-${complaintId}`).value.trim();
+        try {
+            await apiPut(`/api/care/complaints/${complaintId}`, { status, resolution_notes: resolution_notes || null });
+            showToast('Complaint updated!', 'success');
+            loadComplaints();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function cancelOrder(orderId) {
+        if (!confirm(`Cancel Order #${orderId}? This action cannot be undone.`)) return;
+        try {
+            const result = await apiPut(`/api/care/orders/${orderId}/cancel`);
+            showToast(result.message, 'success');
+            loadComplaints();
+            loadOrders();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    // ── Orders ──────────────────────────────────────
+    async function loadOrders() {
+        const el = document.getElementById('orders-content');
+        try {
+            const orders = await apiGet('/api/care/orders');
+            ordersCache = orders;
+            el.innerHTML = `
+                <h2 class="mb-2">All Orders</h2>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>ID</th><th>Customer</th><th>Restaurant</th><th>Total</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            ${orders.map(o => `<tr>
+                                <td>#${o.id}</td>
+                                <td>${o.customer_name || '-'}</td>
+                                <td>${o.restaurant_name || '-'}</td>
+                                <td>${formatPrice(o.total_amount)}</td>
+                                <td>${statusBadge(o.order_status)}</td>
+                                <td>${formatDate(o.created_at)}</td>
+                                <td>
+                                    ${!['Delivered','Cancelled','Rejected'].includes(o.order_status)
+                                        ? `<button class="btn btn-sm btn-danger" onclick="cancelOrder(${o.id})">Cancel</button>`
+                                        : '-'
+                                    }
+                                </td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        } catch (err) { el.innerHTML = `<div class="alert alert-danger">${err.message}</div>`; }
+    }
+
+    // Pre-load orders cache for complaint actions
+    apiGet('/api/care/orders').then(o => ordersCache = o).catch(() => {});
+    </script>
+</body>
+</html>
